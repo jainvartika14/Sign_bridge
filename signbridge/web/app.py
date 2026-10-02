@@ -5,14 +5,19 @@ import tempfile
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
 
+import numpy as np
 import pandas as pd
-from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Form
+from fastapi import FastAPI, File, UploadFile, HTTPException, Query, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from signbridge.inference.predictor import SignBridgePredictor
+from signbridge.services.kokoro_tts import get_kokoro_tts_service, KokoroTTSError
+from signbridge.services.stt_service import get_stt_service, STTServiceError
+from signbridge.services.ollama_llm import get_ollama_llm_service, OllamaLLMError
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 PRODUCTION_CHECKPOINT = PROJECT_ROOT / "trained_models" / "production" / "best_model.pth"
@@ -88,9 +93,9 @@ async def startup_event():
     try:
         init_dataset_mappings()
         predictor = get_predictor()
-        print(f"✅ SignBridge loaded {len(predictor.class_names)} glosses and dataset video mapping.")
+        print(f"[OK] SignBridge loaded {len(predictor.class_names)} glosses and dataset video mapping.")
     except Exception as e:
-        print(f"⚠️ Startup warning: {e}")
+        print(f"[WARNING] Startup warning: {e}")
 
 
 # -------------------------------------------------------------------
@@ -123,12 +128,31 @@ async def serve_index():
 
 @app.get("/api/health")
 async def health_check():
-    predictor = get_predictor()
-    init_dataset_mappings()
+    predictor_loaded = False
+    device = "cpu"
+    num_classes = 0
+    checkpoint_exists = DEFAULT_CHECKPOINT.exists()
+    try:
+        predictor = get_predictor()
+        predictor_loaded = True
+        device = str(predictor.device)
+        num_classes = len(predictor.class_names)
+    except Exception as e:
+        predictor_loaded = False
+
+    try:
+        init_dataset_mappings()
+    except Exception:
+        pass
+
     return {
-        "status": "healthy",
-        "device": str(predictor.device),
-        "num_classes": len(predictor.class_names),
+        "status": "healthy" if predictor_loaded else "degraded",
+        "model_loaded": predictor_loaded,
+        "checkpoint_exists": checkpoint_exists,
+        "checkpoint_path": str(DEFAULT_CHECKPOINT),
+        "device": device,
+        "num_classes": num_classes,
+        "vocabulary_loaded": len(_demo_ready_glosses) > 0 or len(_elite_glosses) > 0 or num_classes > 0,
         "total_videos_mapped": len(_gloss_to_videos),
     }
 
@@ -669,21 +693,42 @@ async def predict_video_endpoint(
 
 class NLPSmoothRequest(BaseModel):
     glosses: List[str] = Field(..., description="List of recognized ASL gloss tokens")
+    use_llm: Optional[bool] = Field(True, description="Whether to use Ollama Qwen3:8B for neural smoothing")
 
 
 @app.post("/api/nlp/smooth")
 async def nlp_smooth_endpoint(req: NLPSmoothRequest):
     """
     NLP Gloss-to-English translation endpoint.
-    Converts raw ASL gloss sequence into natural, fluent English.
+    Converts raw ASL gloss sequence into natural, fluent English via Ollama Qwen3:8B local LLM.
     """
     raw_glosses = req.glosses
     if not raw_glosses:
-        return JSONResponse(content={"english": "", "glosses": []})
+        return JSONResponse(content={"english": "", "glosses": [], "provider": "empty"})
 
     cleaned = [g.strip().upper().rstrip("0123456789").removesuffix("/IT") for g in raw_glosses if g.strip()]
+    if not cleaned:
+        return JSONResponse(content={"english": "", "glosses": [], "provider": "empty"})
 
-    # Quick rule matching
+    # 1. Primary path: Neural LLM translation via Ollama Qwen3:8B
+    if req.use_llm:
+        try:
+            ollama = get_ollama_llm_service()
+            res = await ollama.generate_sentence(cleaned)
+            return JSONResponse(content=res)
+        except OllamaLLMError as oe:
+            # Raise explicit error so caller handles failure and preserves buffer
+            raise HTTPException(
+                status_code=oe.status_code,
+                detail={"error": f"LLM Generation Failed: {oe.message}", "recoverable": oe.recoverable}
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail={"error": f"Unexpected LLM error: {str(e)}", "recoverable": True}
+            )
+
+    # 2. Secondary path / Rule-based matching fallback
     idioms = {
         ("NICE", "MEET", "YOU"): "Nice to meet you!",
         ("SEE", "YOU", "LATER"): "See you later!",
@@ -707,7 +752,7 @@ async def nlp_smooth_endpoint(req: NLPSmoothRequest):
 
     key = tuple(cleaned)
     if key in idioms:
-        return JSONResponse(content={"english": idioms[key], "glosses": cleaned, "idiom": True})
+        return JSONResponse(content={"english": idioms[key], "glosses": cleaned, "idiom": True, "provider": "rule_idiom"})
 
     # Basic grammatical assembly
     pronouns = {"ME": "I", "I": "I", "MY": "my", "YOU": "you", "YOUR": "your", "WE": "we", "THEY": "they"}
@@ -731,4 +776,150 @@ async def nlp_smooth_endpoint(req: NLPSmoothRequest):
     else:
         english = " ".join(tokens).capitalize() + "."
 
-    return JSONResponse(content={"english": english, "glosses": cleaned, "idiom": False})
+    return JSONResponse(content={"english": english, "glosses": cleaned, "idiom": False, "provider": "rule_assembly"})
+
+
+# -------------------------------------------------------------------
+# Kokoro Text-to-Speech (TTS) Endpoints
+# -------------------------------------------------------------------
+
+class TTSSynthesizeRequest(BaseModel):
+    text: str = Field(..., description="Text sentence to synthesize into natural speech")
+    voice_id: Optional[str] = Field(None, description="Voice identifier")
+    rate: Optional[float] = Field(1.0, ge=0.5, le=2.0, description="Speaking rate multiplier")
+    request_id: Optional[str] = Field(None, description="Unique client request ID")
+
+
+@app.post("/api/tts/synthesize")
+async def tts_synthesize_endpoint(req: TTSSynthesizeRequest):
+    """
+    Synthesize recognized sign language text into natural spoken audio via Kokoro TTS.
+    Returns binary audio stream with performance telemetry headers.
+    """
+    try:
+        tts = get_kokoro_tts_service()
+        audio_bytes, media_type, meta = await tts.synthesize(
+            text=req.text,
+            voice_id=req.voice_id,
+            rate=req.rate or 1.0,
+            request_id=req.request_id,
+        )
+
+        headers = {
+            "Content-Type": media_type,
+            "Content-Length": str(len(audio_bytes)),
+            "X-Request-ID": meta["request_id"],
+            "X-TTS-Provider": meta["provider"],
+            "X-TTS-Latency-MS": str(meta["latency_ms"]),
+            "X-Voicebox-Configured": "true" if tts.is_available else "false",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+        }
+
+        return Response(content=audio_bytes, media_type=media_type, headers=headers)
+
+    except KokoroTTSError as ke:
+        raise HTTPException(
+            status_code=ke.status_code,
+            detail={"error": ke.message, "recoverable": ke.recoverable, "request_id": ke.request_id},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": f"TTS synthesis failed: {str(e)}", "recoverable": True})
+
+
+@app.get("/api/tts/voices")
+async def tts_voices_endpoint():
+    """Return available voices from the Kokoro TTS engine."""
+    tts = get_kokoro_tts_service()
+    return {
+        "provider": "kokoro_onnx",
+        "is_configured": tts.is_available,
+        "default_voice": tts.default_voice_id,
+        "voices": tts.get_available_voices(),
+    }
+
+
+# -------------------------------------------------------------------
+# Speech-to-Text (STT) Endpoints
+# -------------------------------------------------------------------
+
+@app.post("/api/stt/transcribe")
+async def stt_transcribe_endpoint(
+    audio: UploadFile = File(...),
+):
+    """
+    Transcribe hearing-partner spoken audio and map to recognized ASL glosses.
+    Serves as the server-side fallback for clients lacking Web Speech API support.
+    """
+    try:
+        stt = get_stt_service()
+        audio_bytes = await audio.read()
+        content_type = audio.content_type or "audio/wav"
+
+        # Pass active vocabulary if predictor is available
+        vocab_set = None
+        try:
+            pred = get_predictor()
+            vocab_set = set(pred.class_names)
+        except Exception:
+            pass
+
+        result = await stt.transcribe_audio_chunk(
+            audio_bytes=audio_bytes,
+            content_type=content_type,
+            vocabulary=vocab_set,
+        )
+        return JSONResponse(content=result)
+
+    except STTServiceError as se:
+        raise HTTPException(status_code=se.status_code, detail={"error": se.message, "recoverable": se.recoverable})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail={"error": f"STT transcription failed: {str(e)}", "recoverable": True})
+
+
+# -------------------------------------------------------------------
+# Two-Way Conversation Configuration & Telemetry Endpoint
+# -------------------------------------------------------------------
+
+@app.get("/api/conversation/config")
+async def conversation_config_endpoint():
+    """
+    Return comprehensive configuration and capability telemetry for Two-Way Conversation Mode.
+    """
+    tts = get_kokoro_tts_service()
+    stt = get_stt_service()
+
+    predictor_loaded = False
+    num_classes = 0
+    device_name = "cpu"
+    try:
+        pred = get_predictor()
+        predictor_loaded = True
+        num_classes = len(pred.class_names)
+        device_name = str(pred.device)
+    except Exception:
+        pass
+
+    return {
+        "version": "2.0.0",
+        "mode_support": ["idle", "sign_to_speech", "speech_to_text", "two_way"],
+        "tts": {
+            "provider": "kokoro_onnx",
+            "is_configured": tts.is_available,
+            "default_voice": tts.default_voice_id,
+            "available_voices": tts.get_available_voices(),
+        },
+        "stt": {
+            "browser_primary": "WebSpeechAPI",
+            "server_fallback_available": True,
+            "cloud_configured": stt.is_cloud_configured,
+            "language": stt.language,
+        },
+        "sign_recognition": {
+            "active": predictor_loaded,
+            "num_classes": num_classes,
+            "device": device_name,
+            "sequence_length": 32,
+            "landmarks_per_frame": 42,
+        },
+    }
+

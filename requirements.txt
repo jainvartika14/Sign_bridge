@@ -7,3 +7,6 @@ tqdm>=4.65.0
 fastapi>=0.110.0
 uvicorn>=0.28.0
 python-multipart>=0.0.9
+kokoro-onnx>=0.6.0
+onnxruntime>=1.17.0
+soundfile>=0.12.0

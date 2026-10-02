@@ -20,12 +20,14 @@ document.addEventListener('DOMContentLoaded', () => {
   // --------------------------------------------------------------------------
   // DOM Elements
   // --------------------------------------------------------------------------
-  const navRecognize            = document.getElementById('nav-recognize');
-  const navLearn                = document.getElementById('nav-learn');
-  const btnTeachMeTop           = document.getElementById('btn-teach-me-top');
-  const btnTeachMeChip          = document.getElementById('btn-teach-me-chip');
-  const viewRecognize           = document.getElementById('view-recognize');
-  const viewLearn               = document.getElementById('view-learn');
+  const navConversation        = document.getElementById('nav-conversation');
+  const navRecognize           = document.getElementById('nav-recognize');
+  const navLearn               = document.getElementById('nav-learn');
+  const btnTeachMeTop          = document.getElementById('btn-teach-me-top');
+  const btnTeachMeChip         = document.getElementById('btn-teach-me-chip');
+  const viewConversation       = document.getElementById('view-conversation');
+  const viewRecognize          = document.getElementById('view-recognize');
+  const viewLearn              = document.getElementById('view-learn');
 
   const tabCamera               = document.getElementById('tab-camera');
   const tabUpload               = document.getElementById('tab-upload');
@@ -35,6 +37,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const webcamFeed              = document.getElementById('webcam-feed');
   const landmarkCanvas          = document.getElementById('landmark-canvas');
   const canvasCtx               = landmarkCanvas ? landmarkCanvas.getContext('2d') : null;
+
+  const convWebcamFeed          = document.getElementById('conv-webcam-feed');
+  const convLandmarkCanvas      = document.getElementById('conv-landmark-canvas');
+  const convCanvasCtx           = convLandmarkCanvas ? convLandmarkCanvas.getContext('2d') : null;
+  const convCameraOverlay       = document.getElementById('conv-camera-overlay');
 
   const btnStartCamera          = document.getElementById('btn-start-camera');
   const btnToggleCamera         = document.getElementById('btn-toggle-camera');
@@ -108,10 +115,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --------------------------------------------------------------------------
   // Pipeline Parameters & State
-  // -------------------------------------
-  // 
-  
-  -------------------------------------
+  // --------------------------------------------------------------------------
   const SEQUENCE_LENGTH         = 32;       // Target temporal length for GRU model
   const HISTORY_WINDOW_FRAMES   = 90;       // ~3.0 seconds at 30 FPS
   const GESTURE_CAPTURE_MS      = 2000;     // 2.0s capture window for "Sign Now"
@@ -138,9 +142,11 @@ document.addEventListener('DOMContentLoaded', () => {
   let idleNoHandsCount          = 0;
   let isInferencing             = false;
 
-  // Smoothing & Stability — confidence-weighted vote buffer with margin gating
+  // Smoothing & Stability — 4-Stage Prediction Stabilizer
+  const stabilizer              = new window.SignBridgeStabilizer();
+  window.SignBridgeStabilizerInstance = stabilizer;
   let voteBuffer                = [];       // Array of recent predictions
-  const VOTE_BUFFER_SIZE        = 5;        // Number of recent sliding-window predictions to consider
+  const VOTE_BUFFER_SIZE        = 6;        // Number of recent sliding-window predictions to consider
   let lastStableGloss           = '—';
   let consecutiveMatches        = 0;
   const CONSECUTIVE_REQUIRED    = 2;
@@ -253,46 +259,67 @@ document.addEventListener('DOMContentLoaded', () => {
   // --------------------------------------------------------------------------
   // Navigation
   // --------------------------------------------------------------------------
-  navRecognize.addEventListener('click', () => switchMainView('recognize'));
-  navLearn.addEventListener('click',     () => switchMainView('learn'));
-  if (btnTeachMeTop) btnTeachMeTop.addEventListener('click', triggerTeachMeSomething);
-  if (btnTeachMeChip) btnTeachMeChip.addEventListener('click', triggerTeachMeSomething);
+  if (navConversation) navConversation.addEventListener('click', () => switchMainView('conversation'));
+  if (navRecognize)    navRecognize.addEventListener('click',    () => switchMainView('recognize'));
+  if (navLearn)        navLearn.addEventListener('click',        () => switchMainView('learn'));
+  if (btnTeachMeTop)   btnTeachMeTop.addEventListener('click',   triggerTeachMeSomething);
+  if (btnTeachMeChip)  btnTeachMeChip.addEventListener('click',  triggerTeachMeSomething);
 
   function switchMainView(viewName) {
-    if (viewName === 'recognize') {
-      navRecognize.classList.add('active');
-      navRecognize.setAttribute('aria-current', 'page');
-      navLearn.classList.remove('active');
-      navLearn.removeAttribute('aria-current');
-      viewRecognize.classList.add('active');
-      viewLearn.classList.remove('active');
+    const allNavs = [navConversation, navRecognize, navLearn];
+    const allViews = [viewConversation, viewRecognize, viewLearn];
+
+    allNavs.forEach(btn => {
+      if (btn) {
+        btn.classList.remove('active');
+        btn.removeAttribute('aria-current');
+      }
+    });
+    allViews.forEach(v => {
+      if (v) v.classList.remove('active');
+    });
+
+    if (viewName === 'conversation') {
+      if (navConversation) {
+        navConversation.classList.add('active');
+        navConversation.setAttribute('aria-current', 'page');
+      }
+      if (viewConversation) viewConversation.classList.add('active');
+      syncConversationCameraViewport();
+    } else if (viewName === 'recognize') {
+      if (navRecognize) {
+        navRecognize.classList.add('active');
+        navRecognize.setAttribute('aria-current', 'page');
+      }
+      if (viewRecognize) viewRecognize.classList.add('active');
     } else {
-      navLearn.classList.add('active');
-      navLearn.setAttribute('aria-current', 'page');
-      navRecognize.classList.remove('active');
-      navRecognize.removeAttribute('aria-current');
-      viewLearn.classList.add('active');
-      viewRecognize.classList.remove('active');
+      if (navLearn) {
+        navLearn.classList.add('active');
+        navLearn.setAttribute('aria-current', 'page');
+      }
+      if (viewLearn) viewLearn.classList.add('active');
       if (isCameraRunning && !targetPracticeGloss) stopCamera();
-      if (vocabList.children.length === 0) {
+      if (vocabList && vocabList.children.length === 0) {
         fetchVocabulary();
         loadDemonstration('APPLE');
       }
     }
   }
 
-  tabCamera.addEventListener('click', () => switchRecognizeTab('camera'));
-  tabUpload.addEventListener('click', () => switchRecognizeTab('upload'));
+  if (tabCamera) tabCamera.addEventListener('click', () => switchRecognizeTab('camera'));
+  if (tabUpload) tabUpload.addEventListener('click', () => switchRecognizeTab('upload'));
 
   function switchRecognizeTab(mode) {
     if (mode === 'camera') {
-      tabCamera.classList.add('active');    tabCamera.setAttribute('aria-selected', 'true');
-      tabUpload.classList.remove('active'); tabUpload.setAttribute('aria-selected', 'false');
-      panelCamera.classList.add('active');  panelUpload.classList.remove('active');
+      if (tabCamera)  { tabCamera.classList.add('active');    tabCamera.setAttribute('aria-selected', 'true'); }
+      if (tabUpload)  { tabUpload.classList.remove('active'); tabUpload.setAttribute('aria-selected', 'false'); }
+      if (panelCamera) panelCamera.classList.add('active');
+      if (panelUpload) panelUpload.classList.remove('active');
     } else {
-      tabUpload.classList.add('active');    tabUpload.setAttribute('aria-selected', 'true');
-      tabCamera.classList.remove('active'); tabCamera.setAttribute('aria-selected', 'false');
-      panelUpload.classList.add('active');  panelCamera.classList.remove('active');
+      if (tabUpload)  { tabUpload.classList.add('active');    tabUpload.setAttribute('aria-selected', 'true'); }
+      if (tabCamera)  { tabCamera.classList.remove('active'); tabCamera.setAttribute('aria-selected', 'false'); }
+      if (panelUpload) panelUpload.classList.add('active');
+      if (panelCamera) panelCamera.classList.remove('active');
       if (isCameraRunning) stopCamera();
     }
   }
@@ -300,11 +327,31 @@ document.addEventListener('DOMContentLoaded', () => {
   // --------------------------------------------------------------------------
   // Camera Management
   // --------------------------------------------------------------------------
-  btnStartCamera.addEventListener('click', startCamera);
-  btnToggleCamera.addEventListener('click', () => isCameraRunning ? stopCamera() : startCamera());
-  btnCaptureSign.addEventListener('click', () => {
+  if (btnStartCamera)  btnStartCamera.addEventListener('click', startCamera);
+  if (btnToggleCamera) btnToggleCamera.addEventListener('click', () => isCameraRunning ? stopCamera() : startCamera());
+  if (btnCaptureSign)  btnCaptureSign.addEventListener('click', () => {
     if (isCameraRunning && !isRecordingGesture) startGestureCapture();
   });
+
+  function syncConversationCameraViewport() {
+    if (!mediaStream || !isCameraRunning) return;
+    if (convWebcamFeed && convWebcamFeed.srcObject !== mediaStream) {
+      convWebcamFeed.srcObject = mediaStream;
+      convWebcamFeed.play().catch(() => {});
+    }
+    if (convLandmarkCanvas && landmarkCanvas) {
+      convLandmarkCanvas.width  = landmarkCanvas.width  || 640;
+      convLandmarkCanvas.height = landmarkCanvas.height || 480;
+    }
+    if (convCameraOverlay) {
+      convCameraOverlay.classList.add('hidden');
+    }
+    const chipCam = document.getElementById('chip-camera-live');
+    if (chipCam) {
+      chipCam.textContent = 'Camera Live';
+      chipCam.classList.add('active');
+    }
+  }
 
   async function startCamera() {
     try {
@@ -343,6 +390,8 @@ document.addEventListener('DOMContentLoaded', () => {
       btnToggleCamera.querySelector('span').textContent = 'Stop Camera';
       updateCameraStatus('Ready to sign — click Sign Now or hold Space', 'active');
 
+      syncConversationCameraViewport();
+
       processCameraLoop();
 
     } catch (err) {
@@ -361,6 +410,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
     webcamFeed.srcObject = null;
     if (canvasCtx) canvasCtx.clearRect(0, 0, landmarkCanvas.width, landmarkCanvas.height);
+
+    if (convWebcamFeed) convWebcamFeed.srcObject = null;
+    if (convCanvasCtx && convLandmarkCanvas) convCanvasCtx.clearRect(0, 0, convLandmarkCanvas.width, convLandmarkCanvas.height);
+    if (convCameraOverlay) convCameraOverlay.classList.remove('hidden');
+    const chipCam = document.getElementById('chip-camera-live');
+    if (chipCam) { chipCam.textContent = 'Camera Off'; chipCam.classList.remove('active'); }
 
     rollingHistory        = [];
     gestureRecordedFrames = [];
@@ -451,6 +506,9 @@ document.addEventListener('DOMContentLoaded', () => {
   function onHandResults(results) {
     if (!canvasCtx) return;
     canvasCtx.clearRect(0, 0, landmarkCanvas.width, landmarkCanvas.height);
+    if (convCanvasCtx && convLandmarkCanvas) {
+      convCanvasCtx.clearRect(0, 0, convLandmarkCanvas.width, convLandmarkCanvas.height);
+    }
 
     DS.totalFrames++;
 
@@ -481,6 +539,11 @@ document.addEventListener('DOMContentLoaded', () => {
       DS.handsDetected = Math.min(detectedHands.length, 2);
     } else {
       DS.handsDetected = 0;
+    }
+
+    // Record hand presence to stabilizer for natural sign boundary detection
+    if (stabilizer) {
+      stabilizer.recordHandPresence(DS.handsDetected);
     }
 
     // ── Explicit Idle / No-Hands Gating ──────────────────────────────────────
@@ -767,76 +830,39 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function applyTemporalSmoothing(result) {
-    const rawTop1 = result.predicted_gloss;
-    const rawConf = result.confidence;
-    const margin = computeTop1Top2Margin(result.top_k);
+    if (!result || !result.predicted_gloss) return;
 
-    // Margin-scaled confidence weighting:
-    // Decisive predictions (large margin between #1 and #2) receive up to 2.5x vote weight.
-    // Ambiguous ties (e.g. 35% vs 34%, margin ~1%) receive base weight without amplification.
-    const marginMultiplier = 1.0 + Math.min(Math.max(margin, 0.0) / 25.0, 1.5);
-    const voteWeight = rawConf * marginMultiplier;
-
-    // Add to sliding vote buffer
-    voteBuffer.push({
-      gloss: rawTop1,
-      confidence: rawConf,
-      margin: margin,
-      weight: voteWeight,
-      topK: result.top_k,
-    });
-    if (voteBuffer.length > VOTE_BUFFER_SIZE) voteBuffer.shift();
-
-    // Aggregate weighted votes across buffer
-    const votes = {};
-    for (const v of voteBuffer) {
-      if (!votes[v.gloss]) votes[v.gloss] = 0;
-      votes[v.gloss] += v.weight;
-    }
-
-    // Find the most-voted gloss
-    let winnerGloss = rawTop1;
-    let winnerScore = 0;
-    for (const [gloss, score] of Object.entries(votes)) {
-      if (score > winnerScore) { winnerScore = score; winnerGloss = gloss; }
-    }
-
-    // Track consecutive matches for the winner
-    if (winnerGloss === lastStableGloss) {
-      consecutiveMatches++;
-    } else {
-      consecutiveMatches = 1;
-      lastStableGloss    = winnerGloss;
-    }
-
-    // Always update Top-5 list for live feedback
+    // 1. Immediately render Top-5 list for raw model responsiveness (Stage 1: Raw Prediction)
     renderTop5List(result.top_k);
 
+    // 2. Process through 4-stage Stabilization Engine
+    const status = stabilizer.processPrediction(result);
+
     // Telemetry: record margin in debug HUD
-    DS.lastPrediction = `${rawTop1} (${rawConf.toFixed(1)}%, Δ${margin.toFixed(1)}%)`;
+    const margin = stabilizer.computeMargin(result.top_k);
+    DS.lastPrediction = `${result.predicted_gloss} (${result.confidence.toFixed(1)}%, Δ${margin.toFixed(1)}%)`;
     updateDebugHUD();
 
-    // Update hero prediction if:
-    // 1. Confirmed consecutively with positive margin, OR
-    // 2. Clear decisive single prediction (high confidence + strong margin), OR
-    // 3. Dominant confidence (>= 60%)
-    const isConfirmedConsecutively = consecutiveMatches >= CONSECUTIVE_REQUIRED && margin >= 4.0;
-    const isDecisivePrediction = rawConf >= 45.0 && margin >= 12.0;
-    const isDominantConfidence = rawConf >= 60.0;
+    // 3. Stage 3: If candidate is stabilized, update UI with stable candidate
+    if (status.stableCandidate) {
+      updatePredictionUI({
+        predicted_gloss: status.stableCandidate.gloss,
+        confidence: status.stableCandidate.confidence,
+        top_k: result.top_k,
+      });
+    }
 
-    if (isConfirmedConsecutively || isDecisivePrediction || isDominantConfidence) {
-      // Find the best result in the buffer for this winner
-      const bestResult = voteBuffer
-        .filter(v => v.gloss === winnerGloss)
-        .reduce((best, v) => (v.confidence > (best?.confidence ?? 0) ? v : best), null);
+    // 4. Stage 4: If sign was just committed (boundary/transition satisfied, duplicate suppressed)
+    if (status.justCommitted && status.committedGloss) {
+      console.log(`[Stabilizer] Sign Committed: ${status.committedGloss}`);
 
-      if (bestResult) {
-        updatePredictionUI({
-          predicted_gloss: winnerGloss,
-          confidence: bestResult.confidence,
-          top_k: bestResult.topK,
-        });
+      // Auto-add to Sentence Builder in Recognize view (if toggle enabled)
+      if (sbAutoAddToggle && sbAutoAddToggle.checked) {
+        addWordToSentence(status.committedGloss, true);
       }
+
+      // Add to Two-Way Conversation buffer
+      addCommittedGlossToConversation(status.committedGloss);
     }
   }
 
@@ -844,7 +870,13 @@ document.addEventListener('DOMContentLoaded', () => {
   // Canvas Hand Skeleton Overlay
   // --------------------------------------------------------------------------
   function drawHandOverlay(landmarks) {
-    const W = landmarkCanvas.width, H = landmarkCanvas.height;
+    const targets = [
+      { ctx: canvasCtx, W: landmarkCanvas.width, H: landmarkCanvas.height }
+    ];
+    if (convCanvasCtx && convLandmarkCanvas && viewConversation && viewConversation.classList.contains('active')) {
+      targets.push({ ctx: convCanvasCtx, W: convLandmarkCanvas.width, H: convLandmarkCanvas.height });
+    }
+
     const CONNECTIONS = [
       [0,1],[1,2],[2,3],[3,4],
       [0,5],[5,6],[6,7],[7,8],
@@ -853,21 +885,23 @@ document.addEventListener('DOMContentLoaded', () => {
       [13,17],[17,18],[18,19],[19,20],[0,17],
     ];
 
-    canvasCtx.strokeStyle = 'rgba(99, 102, 241, 0.65)';
-    canvasCtx.lineWidth = 2.5;
+    targets.forEach(({ ctx, W, H }) => {
+      ctx.strokeStyle = 'rgba(99, 102, 241, 0.65)';
+      ctx.lineWidth = 2.5;
 
-    CONNECTIONS.forEach(([i, j]) => {
-      canvasCtx.beginPath();
-      canvasCtx.moveTo(landmarks[i].x * W, landmarks[i].y * H);
-      canvasCtx.lineTo(landmarks[j].x * W, landmarks[j].y * H);
-      canvasCtx.stroke();
-    });
+      CONNECTIONS.forEach(([i, j]) => {
+        ctx.beginPath();
+        ctx.moveTo(landmarks[i].x * W, landmarks[i].y * H);
+        ctx.lineTo(landmarks[j].x * W, landmarks[j].y * H);
+        ctx.stroke();
+      });
 
-    landmarks.forEach((lm, idx) => {
-      canvasCtx.beginPath();
-      canvasCtx.arc(lm.x * W, lm.y * H, idx === 0 ? 4.5 : 3.0, 0, 2 * Math.PI);
-      canvasCtx.fillStyle = idx === 0 ? '#ec4899' : '#6366f1';
-      canvasCtx.fill();
+      landmarks.forEach((lm, idx) => {
+        ctx.beginPath();
+        ctx.arc(lm.x * W, lm.y * H, idx === 0 ? 4.5 : 3.0, 0, 2 * Math.PI);
+        ctx.fillStyle = idx === 0 ? '#ec4899' : '#6366f1';
+        ctx.fill();
+      });
     });
   }
 
@@ -1017,6 +1051,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     primaryGloss.textContent      = gloss;
     primaryConfidence.textContent = `${conf.toFixed(1)}%`;
+
+    // Update Conversation View UI
+    const convPrimaryGloss = document.getElementById('conv-primary-gloss');
+    const convPrimaryConf  = document.getElementById('conv-primary-conf');
+    if (convPrimaryGloss) convPrimaryGloss.textContent = gloss;
+    if (convPrimaryConf)  convPrimaryConf.textContent = `${conf.toFixed(1)}%`;
+
+    // Notify Conversation Controller
+    if (window.SignBridgeConversation) {
+      window.SignBridgeConversation.receiveSignPrediction(gloss, conf);
+    }
 
     if (targetPracticeGloss) {
       const isTop1 = gloss.toUpperCase() === targetPracticeGloss.toUpperCase();
@@ -1506,4 +1551,433 @@ document.addEventListener('DOMContentLoaded', () => {
   renderSentenceUI();
   updateNLPTranslation();
 
+  // ==========================================================================
+  // TWO-WAY REAL-TIME CONVERSATION MODE CONTROLLER & UI INTEGRATION
+  // ==========================================================================
+  const convController = new window.ConversationController();
+  window.SignBridgeConversation = convController;
+
+  // DOM Elements for Conversation View
+  const btnModeTwoWay        = document.getElementById('btn-mode-twoway');
+  const btnModeSignToSpeech  = document.getElementById('btn-mode-signtospeech');
+  const btnModeSpeechToText  = document.getElementById('btn-mode-speechtotext');
+  const btnConvToggle        = document.getElementById('btn-conv-toggle');
+  const btnConvToggleLabel   = document.getElementById('btn-conv-toggle-label');
+  const btnConvClear         = document.getElementById('btn-conv-clear');
+  const btnConvExport        = document.getElementById('btn-conv-export');
+  const btnConvSpeak         = document.getElementById('btn-conv-speak');
+  const btnConvAddSign       = document.getElementById('btn-conv-add-sign');
+  const btnConvBackspace     = document.getElementById('btn-conv-backspace');
+  const btnConvClearSigns    = document.getElementById('btn-conv-clear-signs');
+  const btnConvStopAudio     = document.getElementById('btn-conv-stop-audio');
+  const convVoiceSelect      = document.getElementById('conv-voice-select');
+
+  const indSign              = document.getElementById('ind-sign');
+  const valSign              = document.getElementById('val-sign');
+  const indTts               = document.getElementById('ind-tts');
+  const valTts               = document.getElementById('val-tts');
+  const indStt               = document.getElementById('ind-stt');
+  const valStt               = document.getElementById('val-stt');
+  const valSpeaker           = document.getElementById('val-speaker');
+
+  const convPrimaryGloss     = document.getElementById('conv-primary-gloss');
+  const convPrimaryConf      = document.getElementById('conv-primary-conf');
+  const convGlossTokens      = document.getElementById('conv-gloss-tokens');
+  const convNlpText          = document.getElementById('conv-nlp-text');
+  const convPartialText      = document.getElementById('conv-partial-text');
+  const liveTypingTag        = document.getElementById('live-typing-tag');
+  const micWaveIndicator     = document.getElementById('mic-wave-indicator');
+  const convMessagesList     = document.getElementById('conv-messages-list');
+  const convThreadContainer  = document.getElementById('conv-thread-container');
+  const convThreadEmpty      = document.getElementById('conv-thread-empty');
+  const convMsgCount         = document.getElementById('conv-msg-count');
+  const chipMicLive          = document.getElementById('chip-mic-live');
+
+  let convAssembledWords     = [];
+  let isConversationRunning  = false;
+  let activeSelectedMode     = 'two_way';
+
+  // 1. Populate Voicebox voices in Conversation selector
+  if (convVoiceSelect && convController.ttsClient) {
+    convController.ttsClient.fetchVoices().then(() => {
+      const voices = convController.ttsClient.voices;
+      if (voices && voices.length > 0) {
+        convVoiceSelect.innerHTML = voices.map(v => `
+          <option value="${v.id}">${v.name} (${v.lang})</option>
+        `).join('');
+      }
+    });
+
+    convVoiceSelect.addEventListener('change', (e) => {
+      if (convController.ttsClient) {
+        convController.ttsClient.defaultVoiceId = e.target.value;
+      }
+    });
+  }
+
+  // 2. Subsystem Telemetry Event Listeners
+  convController.on('subsystemChange', (subsystem, state, details) => {
+    if (subsystem === 'signRecognition') {
+      if (valSign) valSign.textContent = state === 'listening' ? 'Active Tracking' : (state === 'paused' ? 'Paused' : state);
+      if (indSign) indSign.className = `telemetry-indicator ${state === 'listening' ? 'active' : 'ready'}`;
+    } else if (subsystem === 'tts') {
+      if (valTts) valTts.textContent = state === 'generating' ? 'Synthesizing...' : (state === 'playing' ? 'Speaking Aloud' : 'Idle');
+      if (indTts) indTts.className = `telemetry-indicator ${state === 'playing' ? 'active' : (state === 'generating' ? 'warn' : 'ready')}`;
+      if (btnConvSpeak) {
+        if (state === 'generating' || state === 'playing') {
+          btnConvSpeak.classList.add('speaking');
+          btnConvSpeak.disabled = true;
+        } else {
+          btnConvSpeak.classList.remove('speaking');
+          btnConvSpeak.disabled = false;
+        }
+      }
+    } else if (subsystem === 'stt' || subsystem === 'microphone') {
+      const isListening = convController.subsystems.stt === 'listening' || convController.subsystems.stt === 'receiving_partial_transcript';
+      const isMuted = convController.subsystems.microphone === 'muted';
+
+      if (valStt) {
+        valStt.textContent = isMuted ? 'Echo Suppressed (TTS Playing)' : (isListening ? 'Listening Aloud' : 'Microphone Idle');
+      }
+      if (indStt) {
+        indStt.className = `telemetry-indicator ${isListening ? (isMuted ? 'warn' : 'active') : 'ready'}`;
+      }
+      if (chipMicLive) {
+        chipMicLive.textContent = isMuted ? 'Echo Suppressed' : (isListening ? 'Mic Active' : 'Mic Idle');
+        chipMicLive.className = `conv-live-chip ${isListening ? 'active' : ''}`;
+      }
+      if (micWaveIndicator) {
+        micWaveIndicator.className = `mic-wave-indicator ${isListening && !isMuted ? 'active' : ''}`;
+      }
+    }
+
+    if (valSpeaker) {
+      valSpeaker.textContent = convController.activeSpeaker === 'sign_user'
+        ? '🤟 Sign Language User'
+        : (convController.activeSpeaker === 'hearing_partner' ? '🎙️ Hearing Partner' : '—');
+    }
+  });
+
+  // 3. Hearing Partner Real-Time Partial (Interim) Speech
+  convController.on('partialTranscript', (text) => {
+    if (!convPartialText) return;
+    if (text) {
+      convPartialText.textContent = `"${text}"`;
+      if (liveTypingTag) liveTypingTag.style.display = 'inline-block';
+    } else {
+      convPartialText.textContent = isConversationRunning
+        ? 'Listening for hearing partner speech...'
+        : 'Click Start Conversation to begin listening.';
+      if (liveTypingTag) liveTypingTag.style.display = 'none';
+    }
+  });
+
+  // 4. Synchronized Conversation Message Thread
+  convController.on('messageAdded', (message) => {
+    if (!convMessagesList) return;
+    if (convThreadEmpty) convThreadEmpty.style.display = 'none';
+
+    const bubble = document.createElement('div');
+    bubble.className = `conv-msg-bubble ${message.speaker === 'sign_user' ? 'sign-speaker' : 'hearing-speaker'}`;
+    bubble.id = message.id;
+
+    const speakerLabel = message.speaker === 'sign_user' ? '🤟 Deaf / ASL Participant' : '🎙️ Hearing Partner';
+    const glossChipsHtml = message.rawGlosses && message.rawGlosses.length > 0
+      ? `<div class="msg-bubble-glosses">
+          ${message.rawGlosses.map(g => `<span class="msg-gloss-chip">${g}</span>`).join('')}
+        </div>`
+      : (message.matchedGlosses && message.matchedGlosses.length > 0
+          ? `<div class="msg-bubble-glosses">
+              <span style="font-size:0.6875rem; color:var(--text-muted); font-weight:600;">Matched ASL:</span>
+              ${message.matchedGlosses.map(m => `<span class="msg-gloss-chip" title="Click to add">${m.gloss}</span>`).join('')}
+            </div>`
+          : '');
+
+    const replayBtnHtml = message.speaker === 'sign_user'
+      ? `<button class="msg-replay-btn" data-msg-id="${message.id}" title="Replay spoken audio">
+          <span>🔊 Replay</span>
+        </button>`
+      : '';
+
+    bubble.innerHTML = `
+      <div class="msg-bubble-meta">
+        <span class="msg-bubble-speaker">${speakerLabel}</span>
+        <span class="msg-bubble-time">${message.timestamp}</span>
+      </div>
+      <div class="msg-bubble-body">"${message.text}"</div>
+      ${glossChipsHtml}
+      ${replayBtnHtml}
+    `;
+
+    // Replay speech button listener
+    const replayBtn = bubble.querySelector('.msg-replay-btn');
+    if (replayBtn) {
+      replayBtn.addEventListener('click', () => {
+        if (convController.ttsClient) {
+          convController.ttsClient.speak(message.text);
+        }
+      });
+    }
+
+    convMessagesList.appendChild(bubble);
+
+    // Auto-scroll to latest message
+    if (convThreadContainer) {
+      convThreadContainer.scrollTop = convThreadContainer.scrollHeight;
+    }
+
+    if (convMsgCount) {
+      const count = convController.messages.length;
+      convMsgCount.textContent = `${count} message${count === 1 ? '' : 's'} exchanged`;
+    }
+  });
+
+  convController.on('messageUpdated', (message) => {
+    const el = document.getElementById(message.id);
+    if (el) {
+      const replayBtn = el.querySelector('.msg-replay-btn');
+      if (replayBtn) {
+        replayBtn.innerHTML = message.status === 'playing' ? '<span>🔊 Speaking…</span>' : '<span>🔊 Replay</span>';
+      }
+    }
+  });
+
+  convController.on('historyCleared', () => {
+    if (convMessagesList) convMessagesList.innerHTML = '';
+    if (convThreadEmpty) convThreadEmpty.style.display = 'block';
+    if (convMsgCount) convMsgCount.textContent = '0 messages exchanged';
+  });
+
+  // 5. Assembling Signs in Conversation View (Connected to Stabilizer)
+  function renderConversationSentence() {
+    if (!convGlossTokens) return;
+    convAssembledWords = stabilizer.getCommittedGlosses();
+    if (convAssembledWords.length === 0) {
+      convGlossTokens.innerHTML = `<span class="empty-tokens-hint">Signs performed in front of camera assemble here...</span>`;
+    } else {
+      convGlossTokens.innerHTML = convAssembledWords.map((word, idx) => `
+        <span class="sb-word-chip" data-conv-idx="${idx}">
+          <span>${word}</span>
+          <button class="sb-word-remove" title="Remove" aria-label="Remove ${word}">&times;</button>
+        </span>
+      `).join('');
+
+      convGlossTokens.querySelectorAll('.sb-word-remove').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const chip = e.target.closest('.sb-word-chip');
+          const idx = parseInt(chip.getAttribute('data-conv-idx'), 10);
+          stabilizer.removeCommittedAt(idx);
+          convAssembledWords = stabilizer.getCommittedGlosses();
+          renderConversationSentence();
+          updateConversationNLP();
+        });
+      });
+    }
+  }
+
+  function updateConversationNLP() {
+    if (!convNlpText) return;
+    convAssembledWords = stabilizer.getCommittedGlosses();
+    if (convAssembledWords.length === 0) {
+      convNlpText.value = '';
+      convNlpText.placeholder = 'Natural English translation will generate here (editable for review)...';
+      return;
+    }
+
+    if (window.SignBridgeNLP && window.SignBridgeNLP.glossesToEnglish) {
+      const english = window.SignBridgeNLP.glossesToEnglish(convAssembledWords);
+      convNlpText.value = english;
+    } else {
+      convNlpText.value = convAssembledWords.join(' ');
+    }
+  }
+
+  function addCommittedGlossToConversation(gloss) {
+    if (!gloss || gloss === '—' || gloss === 'Analyzing…') return;
+    convController.receiveCommittedGloss(gloss);
+    convAssembledWords = stabilizer.getCommittedGlosses();
+    renderConversationSentence();
+    updateConversationNLP();
+  }
+
+  // Buttons in Conversation View
+  if (btnConvAddSign) {
+    btnConvAddSign.addEventListener('click', () => {
+      const current = convPrimaryGloss ? convPrimaryGloss.textContent.trim() : null;
+      if (current && current !== '—' && current !== 'Analyzing…') {
+        stabilizer.commitManual(current);
+        addCommittedGlossToConversation(current);
+      }
+    });
+  }
+
+  if (btnConvBackspace) {
+    btnConvBackspace.addEventListener('click', () => {
+      stabilizer.undoLastCommitted();
+      convAssembledWords = stabilizer.getCommittedGlosses();
+      renderConversationSentence();
+      updateConversationNLP();
+    });
+  }
+
+  if (btnConvClearSigns) {
+    btnConvClearSigns.addEventListener('click', () => {
+      stabilizer.clearCommitted();
+      convAssembledWords = [];
+      renderConversationSentence();
+      updateConversationNLP();
+    });
+  }
+
+  if (btnConvSpeak) {
+    btnConvSpeak.addEventListener('click', async () => {
+      if (btnConvSpeak.disabled) return;
+      btnConvSpeak.disabled = true;
+
+      try {
+        const reviewedText = convNlpText ? convNlpText.value.trim() : '';
+        convAssembledWords = stabilizer.getCommittedGlosses();
+
+        if (!reviewedText && convAssembledWords.length === 0) {
+          alert('Gloss buffer is empty! Sign words or select quick signs first.');
+          return;
+        }
+
+        // Execute End-to-End sentence pipeline: Gloss Buffer -> Ollama Qwen3:8B -> Kokoro TTS
+        const success = await convController.commitSignUserSentence(convAssembledWords, reviewedText);
+
+        if (success) {
+          // Clear buffer ONLY after successful sentence generation & TTS initiation
+          stabilizer.clearCommitted();
+          convAssembledWords = [];
+          renderConversationSentence();
+          updateConversationNLP();
+        }
+      } finally {
+        if (convController.conversationState !== 'processing' && convController.conversationState !== 'speaking') {
+          btnConvSpeak.disabled = false;
+        }
+      }
+    });
+  }
+
+  // Quick signs in Conversation view
+  document.querySelectorAll('.conv-phrase-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const gloss = btn.getAttribute('data-gloss');
+      if (gloss) {
+        stabilizer.commitManual(gloss);
+        addCommittedGlossToConversation(gloss);
+      }
+    });
+  });
+
+  // 6. Mode Buttons
+  function setActiveModeButton(mode) {
+    activeSelectedMode = mode;
+    [btnModeTwoWay, btnModeSignToSpeech, btnModeSpeechToText].forEach(b => {
+      if (b) b.classList.remove('active');
+    });
+    if (mode === 'two_way' && btnModeTwoWay) btnModeTwoWay.classList.add('active');
+    if (mode === 'sign_to_speech' && btnModeSignToSpeech) btnModeSignToSpeech.classList.add('active');
+    if (mode === 'speech_to_text' && btnModeSpeechToText) btnModeSpeechToText.classList.add('active');
+
+    if (isConversationRunning) {
+      convController.setMode(mode);
+    }
+  }
+
+  if (btnModeTwoWay) btnModeTwoWay.addEventListener('click', () => setActiveModeButton('two_way'));
+  if (btnModeSignToSpeech) btnModeSignToSpeech.addEventListener('click', () => setActiveModeButton('sign_to_speech'));
+  if (btnModeSpeechToText) btnModeSpeechToText.addEventListener('click', () => setActiveModeButton('speech_to_text'));
+
+  // 7. Toggle Conversation Session
+  if (btnConvToggle) {
+    btnConvToggle.addEventListener('click', async () => {
+      if (!isConversationRunning) {
+        // Start Session
+        if (!isCameraRunning) {
+          await startCamera();
+        }
+        convController.setMode(activeSelectedMode);
+        isConversationRunning = true;
+        btnConvToggle.classList.add('recording');
+        if (btnConvToggleLabel) btnConvToggleLabel.textContent = 'Pause Conversation';
+        if (convPartialText) convPartialText.textContent = 'Listening for hearing partner speech...';
+      } else {
+        // Pause Session
+        convController.setMode('idle');
+        isConversationRunning = false;
+        btnConvToggle.classList.remove('recording');
+        if (btnConvToggleLabel) btnConvToggleLabel.textContent = 'Start Conversation';
+        if (convPartialText) convPartialText.textContent = 'Conversation paused. Click Start Conversation to resume.';
+      }
+    });
+  }
+
+  if (btnConvClear) {
+    btnConvClear.addEventListener('click', () => {
+      convController.clearHistory();
+    });
+  }
+
+  if (btnConvExport) {
+    btnConvExport.addEventListener('click', () => {
+      const text = convController.exportTranscriptText();
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `SignBridge_Conversation_${Date.now()}.txt`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  }
+
+  if (btnConvStopAudio) {
+    btnConvStopAudio.addEventListener('click', () => {
+      if (convController.ttsClient) convController.ttsClient.stop();
+    });
+  }
+
+  // --------------------------------------------------------------------------
+  // Truthful Model Status & Health Telemetry Check
+  // --------------------------------------------------------------------------
+  async function checkSystemHealthAndModelStatus() {
+    const statusText = document.getElementById('system-status-text');
+    const statusDot  = document.getElementById('system-status-dot');
+
+    try {
+      const res = await fetch('/api/health');
+      if (!res.ok) throw new Error(`Health API returned ${res.status}`);
+      const data = await res.json();
+
+      if (data.model_loaded) {
+        const classCount = data.num_classes ? data.num_classes.toLocaleString() : '2,731';
+        if (statusText) statusText.textContent = `Model Ready (${classCount} Glosses)`;
+        if (statusDot) statusDot.className = 'status-indicator-dot ready';
+        if (valSign) valSign.textContent = `Ready (${classCount} Glosses)`;
+        if (indSign) indSign.className = 'telemetry-indicator ready';
+      } else {
+        if (statusText) statusText.textContent = 'Model Checkpoint Not Loaded (Vocabulary only)';
+        if (statusDot) statusDot.className = 'status-indicator-dot warn';
+        if (valSign) valSign.textContent = 'Model Checkpoint Not Loaded';
+        if (indSign) indSign.className = 'telemetry-indicator warn';
+      }
+    } catch (e) {
+      console.warn('[SB] Health check error:', e);
+      if (statusText) statusText.textContent = 'Backend Offline';
+      if (statusDot) statusDot.className = 'status-indicator-dot error';
+      if (valSign) valSign.textContent = 'Backend Disconnected';
+      if (indSign) indSign.className = 'telemetry-indicator error';
+    }
+  }
+
+  // Initial Conversation Sentence render & Health check
+  renderConversationSentence();
+  updateConversationNLP();
+  checkSystemHealthAndModelStatus();
+
 }); // end DOMContentLoaded
+

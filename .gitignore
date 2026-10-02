@@ -24,10 +24,12 @@ landmark_interpolation_cache/
 landmark_pose_cache/
 landmark_cache_full/
 
-# Model checkpoints - KEEP LOCAL (per user request)
+# Model checkpoints & large weights - KEEP LOCAL
 trained_models/demo_50/
 trained_models/full_2731/
 trained_models/production/
+models/
+*.onnx
 
 # Environment variables & secrets
 .env

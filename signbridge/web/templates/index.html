@@ -41,6 +41,16 @@
 
         <!-- Primary Top View Navigation -->
         <nav class="top-nav" aria-label="Main application mode">
+          <button id="nav-conversation" class="nav-btn" aria-label="Two-Way Real-Time Conversation Mode">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+              <line x1="9" y1="10" x2="15" y2="10"></line>
+              <line x1="12" y1="7" x2="12" y2="13"></line>
+            </svg>
+            <span>Two-Way Conversation</span>
+            <span class="nav-live-pill">LIVE</span>
+          </button>
+
           <button id="nav-recognize" class="nav-btn active" aria-current="page">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10"></circle>
@@ -63,8 +73,8 @@
         </nav>
 
         <div class="header-badge" id="system-status-badge">
-          <span class="status-indicator-dot"></span>
-          <span id="system-status-text">Model Ready (2,731 Glosses)</span>
+          <span class="status-indicator-dot" id="system-status-dot"></span>
+          <span id="system-status-text">Checking Model Status…</span>
         </div>
       </div>
     </header>
@@ -72,6 +82,211 @@
     <!-- Main Content Area -->
     <main id="main-content" class="main-content" role="main">
       
+      <!-- ==================================================================== -->
+      <!-- VIEW 0: TWO-WAY REAL-TIME CONVERSATION MODE                          -->
+      <!-- ==================================================================== -->
+      <div id="view-conversation" class="view-section">
+        <!-- Hero Header -->
+        <section class="hero-section">
+          <div class="conv-hero-badge">
+            <span class="pulse-dot"></span>
+            <span>SYNCHRONIZED TWO-WAY REAL-TIME COMMUNICATION</span>
+          </div>
+          <h1 class="hero-headline">Two-Way Real-Time Conversation</h1>
+          <p class="hero-subline">Deaf ASL signing converted to natural Voicebox speech &bull; Hearing partner voice transcribed to readable text in real-time.</p>
+        </section>
+
+        <!-- Mode & Subsystem Telemetry Toolbar -->
+        <div class="conv-toolbar-card">
+          <div class="conv-toolbar-top">
+            <div class="conv-modes-group" role="group" aria-label="Conversation Communication Mode">
+              <span class="conv-toolbar-label">Mode:</span>
+              <button id="btn-mode-twoway" class="conv-mode-btn active" data-mode="two_way" title="Enable both sign recognition and speech transcription">
+                <span>🔄 Two-Way (Full)</span>
+              </button>
+              <button id="btn-mode-signtospeech" class="conv-mode-btn" data-mode="sign_to_speech" title="Sign language to Voicebox speech synthesis only">
+                <span>🤟 Sign-to-Speech</span>
+              </button>
+              <button id="btn-mode-speechtotext" class="conv-mode-btn" data-mode="speech_to_text" title="Hearing partner speech to text only">
+                <span>🎙️ Speech-to-Text</span>
+              </button>
+            </div>
+
+            <div class="conv-session-actions">
+              <button id="btn-conv-toggle" class="btn-primary btn-conv-action" title="Start or pause two-way communication session">
+                <span class="btn-icon">▶</span>
+                <span id="btn-conv-toggle-label">Start Conversation</span>
+              </button>
+              <button id="btn-conv-clear" class="btn-secondary" title="Clear message history">
+                <span>Clear Chat</span>
+              </button>
+              <button id="btn-conv-export" class="btn-secondary" title="Export conversation transcript">
+                <span>Export</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Subsystems Status Dashboard -->
+          <div class="conv-telemetry-grid">
+            <div class="telemetry-pill" id="telemetry-sign">
+              <span class="telemetry-indicator ready" id="ind-sign"></span>
+              <span class="telemetry-name">Signs:</span>
+              <span class="telemetry-val" id="val-sign">Ready (2,731 Glosses)</span>
+            </div>
+            <div class="telemetry-pill" id="telemetry-tts">
+              <span class="telemetry-indicator ready" id="ind-tts"></span>
+              <span class="telemetry-name">Voicebox TTS:</span>
+              <span class="telemetry-val" id="val-tts">Idle</span>
+            </div>
+            <div class="telemetry-pill" id="telemetry-stt">
+              <span class="telemetry-indicator ready" id="ind-stt"></span>
+              <span class="telemetry-name">Partner Mic:</span>
+              <span class="telemetry-val" id="val-stt">Microphone Idle</span>
+            </div>
+            <div class="telemetry-pill" id="telemetry-speaker">
+              <span class="telemetry-name">Active Speaker:</span>
+              <span class="telemetry-val" id="val-speaker">—</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Bidirectional Split Workspace -->
+        <div class="conv-workspace-grid">
+          <!-- LEFT STATION: Deaf Signer Interface -->
+          <div class="conv-station-card conv-signer-station">
+            <div class="station-header">
+              <div class="station-title-group">
+                <span class="station-avatar">🤟</span>
+                <div>
+                  <h3 class="station-title">Sign Language Participant</h3>
+                  <span class="station-subtitle">Camera Tracking &bull; Sign Recognition</span>
+                </div>
+              </div>
+              <span class="conv-live-chip" id="chip-camera-live">Camera Off</span>
+            </div>
+
+            <!-- Integrated Camera View for Conversation -->
+            <div class="conv-camera-viewport">
+              <video id="conv-webcam-feed" autoplay playsinline muted></video>
+              <canvas id="conv-landmark-canvas"></canvas>
+              <div id="conv-camera-overlay" class="prompt-overlay">
+                <div class="prompt-content">
+                  <p>Click <strong>Start Conversation</strong> to activate camera and live sign detection.</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Live Sign Recognition Hero Strip -->
+            <div class="conv-recognition-strip">
+              <div class="conv-strip-main">
+                <span class="conv-strip-label">LATEST SIGN:</span>
+                <span class="conv-strip-gloss" id="conv-primary-gloss">—</span>
+                <span class="conv-strip-conf" id="conv-primary-conf">0.0%</span>
+              </div>
+              <button id="btn-conv-add-sign" class="btn-secondary btn-sm" title="Add this sign to sentence">
+                <span>+ Add to Sentence</span>
+              </button>
+            </div>
+
+            <!-- Sentence Assembling & NLP Box -->
+            <div class="conv-sentence-box">
+              <div class="conv-sentence-header">
+                <span class="conv-sentence-label">ASSEMBLED SENTENCE:</span>
+                <div class="conv-sentence-actions">
+                  <button id="btn-conv-backspace" class="btn-text-sm" title="Remove last sign">⌫ Delete</button>
+                  <button id="btn-conv-clear-signs" class="btn-text-sm" title="Clear assembled signs">Clear</button>
+                </div>
+              </div>
+              <div class="conv-gloss-tokens" id="conv-gloss-tokens">
+                <span class="empty-tokens-hint">Signs performed in front of camera assemble here...</span>
+              </div>
+              <div class="conv-nlp-preview">
+                <span class="nlp-icon">✨</span>
+                <input type="text" id="conv-nlp-text" class="conv-nlp-input" placeholder="Natural English translation will generate here (editable for review)..." aria-label="Review and edit translated sentence before speaking">
+              </div>
+              <div class="conv-speak-controls">
+                <button id="btn-conv-speak" class="btn-primary btn-speak-pulse" title="Speak sentence aloud using Voicebox TTS">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>
+                  <span>Speak Aloud with Voicebox</span>
+                </button>
+                <div class="conv-voice-picker">
+                  <label for="conv-voice-select">Voice:</label>
+                  <select id="conv-voice-select" class="sb-voice-select-sm" title="Select Voicebox voice">
+                    <option value="natural-en-us-1">Natural American (Female)</option>
+                    <option value="natural-en-us-2">Natural American (Male)</option>
+                    <option value="natural-en-gb-1">British English</option>
+                    <option value="natural-en-au-1">Australian English</option>
+                    <option value="expressive-fast">Expressive Fast</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <!-- Quick High-Accuracy Vocabulary Bar -->
+            <div class="conv-quick-phrases">
+              <span class="quick-phrases-label">Quick Signs:</span>
+              <div class="quick-phrases-scroll">
+                <button class="conv-phrase-chip" data-gloss="HELLO">HELLO</button>
+                <button class="conv-phrase-chip" data-gloss="THANKYOU">THANK YOU</button>
+                <button class="conv-phrase-chip" data-gloss="PLEASE">PLEASE</button>
+                <button class="conv-phrase-chip" data-gloss="HELP">HELP</button>
+                <button class="conv-phrase-chip" data-gloss="YES">YES</button>
+                <button class="conv-phrase-chip" data-gloss="NO">NO</button>
+                <button class="conv-phrase-chip" data-gloss="NICE">NICE</button>
+                <button class="conv-phrase-chip" data-gloss="MEET">MEET</button>
+                <button class="conv-phrase-chip" data-gloss="YOU">YOU</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- RIGHT STATION: Hearing Partner & Synchronized Conversation Feed -->
+          <div class="conv-station-card conv-thread-station">
+            <div class="station-header">
+              <div class="station-title-group">
+                <span class="station-avatar">🎙️</span>
+                <div>
+                  <h3 class="station-title">Synchronized Conversation</h3>
+                  <span class="station-subtitle">Hearing Partner Voice &bull; Two-Way History</span>
+                </div>
+              </div>
+              <span class="conv-live-chip" id="chip-mic-live">Mic Idle</span>
+            </div>
+
+            <!-- Real-time Live Partial Transcription Drawer -->
+            <div class="conv-live-transcription-box" id="conv-live-transcription-box">
+              <div class="live-transcription-header">
+                <div class="live-mic-status">
+                  <span class="mic-wave-indicator" id="mic-wave-indicator"></span>
+                  <span id="conv-mic-status-label">Hearing Partner Speech Input:</span>
+                </div>
+                <span class="live-typing-tag" id="live-typing-tag" style="display:none;">LIVE TRANSCRIBING...</span>
+              </div>
+              <div class="live-transcription-content" id="conv-partial-text-container">
+                <span class="live-partial-text" id="conv-partial-text">Listening for hearing partner's speech...</span>
+              </div>
+            </div>
+
+            <!-- Synchronized Message Thread -->
+            <div class="conv-thread-container" id="conv-thread-container" role="log" aria-live="polite">
+              <div class="conv-thread-empty" id="conv-thread-empty">
+                <div class="empty-thread-icon">💬</div>
+                <h4>Conversation is ready to begin</h4>
+                <p>Click <strong>Start Conversation</strong> above. Both sign gestures and spoken responses will assemble here into a synchronized dialogue.</p>
+              </div>
+              <div class="conv-messages-list" id="conv-messages-list"></div>
+            </div>
+
+            <!-- Thread Footer with Stats -->
+            <div class="conv-thread-footer">
+              <span id="conv-msg-count">0 messages exchanged</span>
+              <button id="btn-conv-stop-audio" class="btn-text-sm" title="Stop any active speech audio immediately">
+                ⏹ Stop Audio
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- ==================================================================== -->
       <!-- VIEW 1: RECOGNIZE MODE (Camera / Video Upload)                        -->
       <!-- ==================================================================== -->
@@ -485,6 +700,10 @@
 
   <!-- JavaScript Modules -->
   <script src="/static/js/nlp.js"></script>
+  <script src="/static/js/stabilizer.js"></script>
+  <script src="/static/js/tts_client.js"></script>
+  <script src="/static/js/stt_client.js"></script>
+  <script src="/static/js/conversation_controller.js"></script>
   <script src="/static/js/app.js"></script>
 </body>
 </html>

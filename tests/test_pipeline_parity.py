@@ -13,6 +13,7 @@ TEST_CSV = PROJECT_ROOT / "dataset" / "ASL_Citizen" / "splits" / "test.csv"
 TEST_CACHE_DIR = PROJECT_ROOT / "landmark_cache_full" / "test"
 
 
+@unittest.skipUnless(TEST_CSV.exists() and TEST_CACHE_DIR.exists(), "ASL Citizen dataset splits and cache files not present")
 class TestPipelineParity(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
